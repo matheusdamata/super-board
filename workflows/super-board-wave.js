@@ -40,7 +40,7 @@ if (input.tier && !['low', 'medium', 'high'].includes(input.tier)) {
 }
 
 let halted = false
-const READ_FAILURE = `Required GitHub reads use .claude/bin/super-board-github-read.py: three total attempts, exit 79 means run halted. Check --check before any GitHub write, migration, or merge. On exit 79 preserve worktree/card/approval/claims, make no more GitHub calls, and report status=halted (preflight verdict=halted). Never retry a mutation. Config: ${input.configPath}.`
+const READ_FAILURE = `Required GitHub reads use .claude/bin/super-board-github-read.py: three total attempts, exit 79 means run halted. Check --check before any GitHub write, migration, or merge. On exit 79 preserve worktree/card/approval/claims, make no more GitHub calls, and report status=halted (preflight verdict=halted). Never retry a mutation. The validator rejects a read with the wrong shape and exit 79 halts the whole run, so never guess a command: run python3 .claude/bin/super-board-github-read.py --help-kinds once and copy the command for your --kind (arguments after --, no leading gh). Any other read with no listed kind: --kind json. Config: ${input.configPath}.`
 
 const CLASSIFY_SCHEMA = {
   type: 'object',
