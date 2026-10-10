@@ -20,6 +20,91 @@ import time
 
 HALTED = 79
 
+# One example per --kind: the read-only gh arguments (after `--`) that produce the
+# shape validate() accepts, and a recorded output that passes it. Lanes copy these
+# from --help-kinds instead of guessing. test/github-read-kinds.test.ts runs every
+# example through read_only() and validate(); a kind without an example fails it.
+_SHA = '0123456789abcdef0123456789abcdef01234567'
+_ISSUES_QUERY = ('query($owner:String!,$repo:String!,$endCursor:String){repository(owner:$owner,name:$repo){'
+                 'issues(states:OPEN,first:100,after:$endCursor){pageInfo{hasNextPage endCursor} '
+                 'nodes{number title body state labels(first:30){nodes{name}} comments(last:8){nodes{body}}}}}}')
+_APPROVAL_QUERY = ('query($owner:String!,$repo:String!,$pr:Int!,$endCursor:String){repository(owner:$owner,name:$repo){'
+                   'pullRequest(number:$pr){headRefOid state closingIssuesReferences(first:100,after:$endCursor){'
+                   'pageInfo{hasNextPage endCursor} nodes{number repository{nameWithOwner}}}}}}')
+_STATUS_QUERY = ('query{user(login:"<owner>"){projectV2(number:<project>){field(name:"Status"){'
+                 '... on ProjectV2SingleSelectField{id options{id name}}}}}}')
+KINDS = {
+    'json': {'command': "api 'repos/{owner}/{repo}/issues/<n>'",
+             'sample': '{"number": 7}'},
+    'scalar': {'command': 'repo view --json owner -q .owner.login',
+               'sample': 'octo\n'},
+    'issue-number': {'command': "pr view <pr> --json closingIssuesReferences -q '.closingIssuesReferences[0].number // empty'",
+                     'sample': '7\n'},
+    'head': {'command': "pr view <pr> --json headRefName,headRefOid -q '.headRefName + \" \" + .headRefOid'",
+             'sample': f'issue-7-fix {_SHA}\n'},
+    'state': {'command': 'issue view <n> --json state -q .state',
+              'sample': 'OPEN\n'},
+    'diff': {'command': 'pr diff <pr>', 'flags': '--meta <metadata.json> ',
+             'sample': 'diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1,2 @@\n a\n+b\n',
+             'meta': {'files': [{'path': 'a.txt'}], 'additions': 1, 'deletions': 0}},
+    'metadata': {'command': 'pr view <pr> --json labels,files,additions,deletions,changedFiles,body',
+                 'sample': '{"labels": [{"name": "bug"}], "files": [{"path": "a.txt"}], "additions": 1, '
+                           '"deletions": 0, "changedFiles": 1, "body": ""}'},
+    'items': {'command': 'project item-list <project> --owner <owner> --format json --limit 500',
+              'sample': '{"items": [{"id": "PVTI_1", "content": {"type": "Issue", "title": "t", "number": 7}}], "totalCount": 1}'},
+    'issues': {'command': f"api graphql --paginate --slurp -f 'query={_ISSUES_QUERY}' -F owner=<owner> -F repo=<repo>",
+               'sample': '[{"data": {"repository": {"issues": {"pageInfo": {"hasNextPage": false, "endCursor": null}, '
+                         '"nodes": [{"number": 7, "title": "t", "body": "", "state": "OPEN", '
+                         '"labels": {"nodes": []}, "comments": {"nodes": []}}]}}}}]'},
+    'quota': {'command': 'api rate_limit',
+              'sample': '{"resources": {"graphql": {"remaining": 4999, "reset": 1}, "core": {"remaining": 4999, "reset": 1}}}'},
+    'projects': {'command': 'project list --owner <owner> --format json',
+                 'sample': '{"projects": [{"number": 1, "title": "board"}]}'},
+    'project': {'command': 'project view <project> --owner <owner> --format json',
+                'sample': '{"id": "PVT_1"}'},
+    'fields': {'command': 'project field-list <project> --owner <owner> --format json',
+               'sample': '{"fields": [{"name": "Status", "id": "PVTSSF_1", "options": [{"id": "o1", "name": "Ready"}]}]}'},
+    'status-field': {'command': f"api graphql -f 'query={_STATUS_QUERY}'",
+                     'sample': '{"data": {"user": {"projectV2": {"field": {"id": "PVTSSF_1", '
+                               '"options": [{"id": "o1", "name": "Ready"}]}}}}}'},
+    'permission': {'command': "api 'repos/{owner}/{repo}/collaborators/<login>/permission'",
+                   'sample': '{"permission": "admin"}'},
+    'comments': {'command': "api --paginate --slurp 'repos/{owner}/{repo}/issues/<n>/comments?per_page=100'",
+                 'sample': '[[{"id": 1, "body": "x", "user": {"login": "octo"}, '
+                           '"created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"}]]'},
+    'approval': {'command': f"api graphql --paginate --slurp -f 'query={_APPROVAL_QUERY}' -F owner=<owner> -F repo=<repo> -F pr=<pr>",
+                 'sample': '[{"data": {"repository": {"pullRequest": {"headRefOid": "' + _SHA + '", "state": "OPEN", '
+                           '"closingIssuesReferences": {"pageInfo": {"hasNextPage": false, "endCursor": null}, '
+                           '"nodes": [{"number": 7}]}}}}}]'},
+    'merge-state': {'command': 'pr view <pr> --json state,headRefOid,mergeCommit',
+                    'sample': '{"state": "MERGED", "headRefOid": "' + _SHA + '", "mergeCommit": {"oid": "' + _SHA + '"}}'},
+    'body': {'command': "api 'repos/{owner}/{repo}/pulls/<pr>' --jq '{headRefOid: .head.sha, body: (.body // \"\")}'",
+             'sample': '{"headRefOid": "' + _SHA + '", "body": ""}'},
+    'dedupe': {'command': 'issue list --label <label> --state open --limit 200 --json number,body',
+               'sample': '[{"number": 7, "body": ""}]'},
+    'prs-open': {'command': 'pr list --state open --limit 100 --json number,title,body,url,headRefName,files',
+                 'sample': '[{"number": 8, "title": "t", "body": "", "url": "https://github.com/o/r/pull/8", '
+                           '"headRefName": "issue-7-fix", "files": [{"path": "a.txt"}]}]'},
+    'prs-merged': {'command': 'pr list --state merged --limit 100 --json number,title,body,url',
+                   'sample': '[{"number": 8, "title": "t", "body": "", "url": "https://github.com/o/r/pull/8"}]'},
+    'issues-closed': {'command': 'issue list --state closed --limit 100 --json number,title,body,stateReason',
+                      'sample': '[{"number": 7, "title": "t", "body": "", "stateReason": "COMPLETED"}]'},
+    'issue': {'command': 'issue view <n> --json number,title,body,comments',
+              'sample': '{"number": 7, "title": "t", "body": "", "comments": []}'},
+    'object': {'command': "api 'repos/{owner}/{repo}/pulls/<pr>'",
+               'sample': '{"number": 8}'},
+    'array': {'command': "api 'repos/{owner}/{repo}/pulls/<pr>/files'",
+              'sample': '[]'},
+}
+KIND_CHOICES = tuple(KINDS)
+
+
+def help_kinds():
+    lines = ['Required read per --kind. Fill <placeholders>; gh fills {owner}/{repo}. Pass the arguments after `--`, never a leading `gh`.']
+    lines += [f'{kind:<14} python3 .claude/bin/super-board-github-read.py --kind {kind} {ex.get("flags", "")}-- {ex["command"]}'
+              for kind, ex in KINDS.items()]
+    return '\n'.join(lines) + '\n'
+
 
 class ReadHalted(Exception):
     pass
@@ -292,7 +377,8 @@ def read(args, kind='json', meta=None, recovering=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--kind', choices=('json','scalar','issue-number','head','state','diff','metadata','items','issues','quota','projects','project','fields','status-field','permission','comments','approval','merge-state','body','dedupe','prs-open','prs-merged','issues-closed','issue','object','array'))
+    parser.add_argument('--kind', choices=KIND_CHOICES)
+    parser.add_argument('--help-kinds', action='store_true', help='print the example command for every --kind and exit')
     parser.add_argument('--meta')
     parser.add_argument('--check', action='store_true')
     parser.add_argument('--halt', help='record an unresolved mutation outcome and stop; never retry it')
@@ -300,6 +386,9 @@ def main():
     parser.add_argument('command', nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ['--'] else args.command
+    if args.help_kinds:
+        sys.stdout.write(help_kinds())
+        return 0
     try:
         if args.halt:
             halt(args.halt, 1)
